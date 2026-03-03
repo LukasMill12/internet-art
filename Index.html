@@ -1,0 +1,746 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Scroll Morph</title>
+  <style>
+    html, body { margin: 0; padding: 0; background: #0a0a0a; height: 100%; }
+    .spacer { height: 700vh; width: 100%; }
+    canvas { position: fixed; inset: 0; display: block; }
+  </style>
+</head>
+<body>
+  <div class="spacer"></div>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.3/lib/p5.min.js"></script>
+  <script>
+    const POINT_DENSITY       = 0.13;
+    const POINT_DENSITY_DENSE = 0.30;
+    const START_DENSITY_MULT  = 1.8;
+    const START_FILL_STEP     = 1.5;
+
+    const LIQUID_STRENGTH = 88;
+    const SWAY_STRENGTH   = 66;
+    const SPRING          = 0.12;
+    const DAMPING         = 0.78;
+
+    const PAINT_RADIUS_MIN = 2.2;
+    const PAINT_RADIUS_MAX = 3.8;
+
+    const BLUR_PX   = 8;
+    const THRESHOLD = 22;
+    const SIM_SCALE = 0.70;
+
+    const BLOB_RADIUS_MIN = 52;
+    const BLOB_RADIUS_MAX = 120;
+
+    const VOID_COUNT    = 7;
+    const VOID_ORBIT    = 46;
+    const VOID_SIZE_MIN = 14;
+    const VOID_SIZE_MAX = 42;
+    const VOID_SPEED    = 0.55;
+    const VOID_STRENGTH = 2.0;
+
+    const STAGGER_DELAY = [0.0, 0.06, 0.12, 0.18];
+
+    const SYSTEM_COLORS = [
+      [220,  50,  50],
+      [230, 180,  30],
+      [ 30, 180, 200],
+      [ 40, 200, 100],
+    ];
+
+    const INK_JOIN_START  = [0.56, 0.65, 0.74, 0.83];
+    const INK_JOIN_END    = [0.64, 0.73, 0.82, 0.91];
+    const INK_LEAVE_START = [0.93, 0.93, 0.93, 0.93];
+    const INK_LEAVE_END   = [0.99, 0.99, 0.99, 0.99];
+
+    const INK_PARTICLE_COUNT   = 760;
+    const INK_SPAWN_RADIUS     = 34;
+    const INK_DRAW_RADIUS_MULT = 1.55;
+
+    const BREATHE_AMP = 0.055;
+
+    // NEW: scroll/ease cutoff after which the combined blob is permanently gone
+    const COMBO_KILL_EASE = 0.955;
+
+    let font;
+    let systems  = [];
+    let inkDrops = [];
+    let lastScroll = 0;
+    let flowTime   = 0;
+    let comboA, comboB;
+
+    function preload() { font = loadFont('OpenSans-Bold.ttf'); }
+
+    function setup() {
+      createCanvas(windowWidth, windowHeight);
+      pixelDensity(1);
+      noSmooth();
+      buildComboBuffers();
+      buildSystems();
+      buildInkDrops();
+    }
+
+    function windowResized() {
+      resizeCanvas(windowWidth, windowHeight);
+      buildComboBuffers();
+      buildSystems(true);
+      buildInkDrops();
+    }
+
+    function buildComboBuffers() {
+      const w = Math.max(1, Math.floor(width  * SIM_SCALE));
+      const h = Math.max(1, Math.floor(height * SIM_SCALE));
+      comboA = createGraphics(w, h);
+      comboB = createGraphics(w, h);
+      comboA.pixelDensity(1);
+      comboB.pixelDensity(1);
+      comboA.noSmooth();
+      comboB.noSmooth();
+    }
+
+    // ── Text systems ──────────────────────────────────────────────────────────
+    function buildSystems(keepMotion = false) {
+      systems = [];
+      const M = 44, TOP = 190;
+      const nameSize = () => clamp(width * 0.095, 84, 140);
+      const bodySize = () => clamp(width * 0.055, 34, 64);
+      const hintSize = () => clamp(width * 0.050, 30, 58);
+      const nameY  = () => TOP;
+      const line1Y = () => nameY()  + nameSize() * 1.10;
+      const line2Y = () => line1Y() + bodySize() * 1.28;
+      const hintY  = () => height   - hintSize() * 0.95;
+      const endSizeBig = () => clamp(width * 0.11, 70, 160);
+      const endY1 = () => height * 0.20;
+      const endY2 = () => height * 0.42;
+      const endY3 = () => height * 0.64;
+      const endY4 = () => height * 0.86;
+
+      systems.push(makeSystem({
+        fromText:'Lukas Miliauskis',
+        toText:'CONTINUITY',
+        fromSizeFn:nameSize,
+        toSizeFn:endSizeBig,
+        fromPosFn:(b)=>({x:M,y:nameY()}),
+        toPosFn:(b)=>({x:width/2-(b.x+b.w/2),y:endY1()-(b.y+b.h/2)}),
+        colorIdx:0
+      }, keepMotion));
+
+      systems.push(makeSystem({
+        fromText:'I design visual systems.',
+        toText:'INTENT',
+        fromSizeFn:bodySize,
+        toSizeFn:endSizeBig,
+        fromPosFn:(b)=>({x:M,y:line1Y()}),
+        toPosFn:(b)=>({x:width/2-(b.x+b.w/2),y:endY2()-(b.y+b.h/2)}),
+        colorIdx:1
+      }, keepMotion));
+
+      systems.push(makeSystem({
+        fromText:'This website reflects how I think and work.',
+        toText:'STRUCTURE',
+        fromSizeFn:bodySize,
+        toSizeFn:endSizeBig,
+        fromPosFn:(b)=>({x:M,y:line2Y()}),
+        toPosFn:(b)=>({x:width/2-(b.x+b.w/2),y:endY3()-(b.y+b.h/2)}),
+        colorIdx:2
+      }, keepMotion));
+
+      systems.push(makeSystem({
+        fromText:'Scroll to continue',
+        toText:'BALANCE',
+        fromSizeFn:hintSize,
+        toSizeFn:endSizeBig,
+        fromPosFn:(b)=>({x:M,y:hintY()}),
+        toPosFn:(b)=>({x:width/2-(b.x+b.w/2),y:endY4()-(b.y+b.h/2)}),
+        colorIdx:3
+      }, keepMotion));
+    }
+
+    // ── Ink drops ─────────────────────────────────────────────────────────────
+    function buildInkDrops() {
+      inkDrops = [];
+      const cx = width * 0.5, cy = height * 0.5;
+      const startPositions = [
+        { x: -width  * 0.10,     y: cy - height * 0.16 },
+        { x:  width  * 1.10,     y: cy + height * 0.20 },
+        { x:  cx + width * 0.28, y: -height * 0.10     },
+        { x:  cx - width * 0.28, y:  height * 1.10     },
+      ];
+      for (let i = 0; i < 4; i++) {
+        const sp = startPositions[i];
+        const particles = [];
+        for (let j = 0; j < INK_PARTICLE_COUNT; j++) {
+          const angle = Math.random() * Math.PI * 2;
+          const dist  = Math.random() * INK_SPAWN_RADIUS;
+          particles.push({
+            x: sp.x + Math.cos(angle)*dist,
+            y: sp.y + Math.sin(angle)*dist,
+            vx: 0, vy: 0,
+            r: (PAINT_RADIUS_MIN + Math.random()*(PAINT_RADIUS_MAX-PAINT_RADIUS_MIN)) * 1.15,
+            seedX: Math.random()*1000,
+            seedY: Math.random()*1000,
+            orbitA: Math.random()*Math.PI*2,
+          });
+        }
+        inkDrops.push({ particles, startX: sp.x, startY: sp.y, colorIdx: i });
+      }
+    }
+
+    function stepInkDrop(drop, joinK, mergeK, smear, dScroll) {
+      const cx = width*0.5, cy = height*0.5;
+      const blobR = lerp(BLOB_RADIUS_MAX, BLOB_RADIUS_MIN, clamp(mergeK,0,1));
+      const travelT = clamp(joinK / 0.6, 0, 1);
+      const mergeT  = clamp((joinK - 0.6) / 0.4, 0, 1);
+      const scrolling = dScroll > 0.0002;
+
+      for (const p of drop.particles) {
+        let tx, ty;
+
+        if (joinK < 0.001) {
+          p.vx = 0; p.vy = 0;
+          continue;
+        } else if (mergeT < 0.001) {
+          const eased   = smoothstep(0, 1, travelT);
+          const targetX = lerp(drop.startX, cx, eased);
+          const targetY = lerp(drop.startY, cy, eased);
+          const wobble  = 26;
+          tx = targetX + Math.sin(flowTime*0.28 + p.seedX*1.8)*wobble*0.25;
+          ty = targetY + Math.cos(flowTime*0.22 + p.seedY*1.8)*wobble*0.20;
+
+          if (scrolling) {
+            p.vx += (tx - p.x) * 0.09;
+            p.vy += (ty - p.y) * 0.09;
+          }
+          p.vx *= 0.78;
+          p.vy *= 0.78;
+          p.x  += p.vx;
+          p.y  += p.vy;
+        } else {
+          const aa      = p.orbitA + flowTime*0.25;
+          const breathe = 1.0 + BREATHE_AMP*Math.sin(flowTime*0.4 + p.seedX);
+          const rr      = blobR * breathe;
+          const ringX   = cx + Math.cos(aa)*rr;
+          const ringY   = cy + Math.sin(aa)*rr*0.95;
+          const swirl   = 22*mergeT;
+          const sA      = aa + flowTime*0.4;
+          tx = lerp(cx, ringX + Math.cos(sA)*swirl, 0.65*mergeT);
+          ty = lerp(cy, ringY + Math.sin(sA)*swirl*0.75, 0.65*mergeT);
+          const n   = noise(p.seedX + flowTime*0.08, p.seedY + flowTime*0.08);
+          const ang = n * TWO_PI * 2;
+          tx += Math.cos(ang)*LIQUID_STRENGTH*smear*mergeT*0.45;
+          ty += Math.sin(ang)*LIQUID_STRENGTH*smear*mergeT*0.40;
+
+          const sp2 = lerp(0.20, SPRING, smear);
+          const dp2 = lerp(0.66, DAMPING, smear);
+          p.vx += (tx - p.x)*sp2;
+          p.vy += (ty - p.y)*sp2;
+          p.vx *= dp2;
+          p.vy *= dp2;
+          p.x  += p.vx;
+          p.y  += p.vy;
+        }
+      }
+    }
+
+    // ── Text system factory ───────────────────────────────────────────────────
+    function makeSystem(cfg, keepMotion=false) {
+      const s = {
+        cfg, particles:[],
+        fromPts:[], toPts:[], fromPtsDense:[], toPtsDense:[], fromPtsFill:[], toPtsFill:[],
+        paintA:null, paintB:null,
+
+        makePaintBuffers() {
+          const w=Math.max(1,Math.floor(width*SIM_SCALE)),
+                h=Math.max(1,Math.floor(height*SIM_SCALE));
+          this.paintA=createGraphics(w,h);
+          this.paintB=createGraphics(w,h);
+          this.paintA.pixelDensity(1);
+          this.paintB.pixelDensity(1);
+          this.paintA.noSmooth();
+          this.paintB.noSmooth();
+        },
+
+        buildPointSets() {
+          const fromSize=this.cfg.fromSizeFn(), toSize=this.cfg.toSizeFn();
+          this.fromPts      = textPointsAt(this.cfg.fromText, fromSize, this.cfg.fromPosFn, POINT_DENSITY*START_DENSITY_MULT);
+          this.fromPtsDense = textPointsAt(this.cfg.fromText, fromSize, this.cfg.fromPosFn, POINT_DENSITY_DENSE*START_DENSITY_MULT);
+          this.fromPtsFill  = buildFillPointsAt(this.cfg.fromText, fromSize, this.cfg.fromPosFn, START_FILL_STEP);
+          this.toPts        = textPointsAt(this.cfg.toText, toSize, this.cfg.toPosFn, POINT_DENSITY);
+          this.toPtsDense   = textPointsAt(this.cfg.toText, toSize, this.cfg.toPosFn, POINT_DENSITY_DENSE);
+          this.toPtsFill    = buildFillPointsAt(this.cfg.toText, toSize, this.cfg.toPosFn, 7);
+          if (this.fromPtsFill.length<200) this.fromPtsFill=this.fromPtsDense.slice();
+          if (this.toPtsFill.length<200)   this.toPtsFill  =this.toPtsDense.slice();
+          if (this.fromPts.length<50||this.toPts.length<50) {
+            this.fromPts=this.fromPtsDense.slice();
+            this.toPts=this.toPtsDense.slice();
+          }
+          this.buildParticles(keepMotion);
+        },
+
+        buildParticles(keepMotionNow=false) {
+          const count=Math.max(
+            this.fromPts.length,
+            this.toPtsDense.length,
+            this.fromPtsFill.length,
+            this.toPtsFill.length
+          );
+          const old=this.particles;
+          this.particles=[];
+          for (let i=0;i<count;i++) {
+            const a=this.fromPts[i%this.fromPts.length], o=old[i];
+            this.particles.push({
+              i,
+              x:(keepMotionNow&&o)?o.x:a.x,
+              y:(keepMotionNow&&o)?o.y:a.y,
+              vx:(keepMotionNow&&o)?o.vx:0,
+              vy:(keepMotionNow&&o)?o.vy:0,
+              r:random(PAINT_RADIUS_MIN,PAINT_RADIUS_MAX),
+              seedX:random(1000),
+              seedY:random(1000),
+              seedA:random(TWO_PI)
+            });
+          }
+        },
+
+        stepSimulation(easeT, smear, sealStart, sealEnd, fillStart, fillEnd, mergeK) {
+          const cx=width*0.5, cy=height*0.5;
+          const blobR=lerp(BLOB_RADIUS_MAX,BLOB_RADIUS_MIN,clamp(mergeK,0,1));
+          for (const p of this.particles) {
+            const a0=this.fromPts[p.i%this.fromPts.length],
+                  a1=this.fromPtsDense[p.i%this.fromPtsDense.length],
+                  a2=this.fromPtsFill[p.i%this.fromPtsFill.length];
+            const b0=this.toPts[p.i%this.toPts.length],
+                  b1=this.toPtsDense[p.i%this.toPtsDense.length],
+                  b2=this.toPtsFill[p.i%this.toPtsFill.length];
+
+            let ax=lerp(a0.x,a1.x,sealStart),
+                ay=lerp(a0.y,a1.y,sealStart);
+            ax=lerp(ax,a2.x,fillStart);
+            ay=lerp(ay,a2.y,fillStart);
+
+            let bx=lerp(b0.x,b1.x,sealEnd),
+                by=lerp(b0.y,b1.y,sealEnd);
+            bx=lerp(bx,b2.x,fillEnd);
+            by=lerp(by,b2.y,fillEnd);
+
+            let tx=lerp(ax,bx,easeT),
+                ty=lerp(ay,by,easeT);
+            const endSeal=Math.max(sealStart,sealEnd),
+                  motion=smear*(1-endSeal);
+
+            const n=noise(p.seedX+flowTime*0.08,p.seedY+flowTime*0.08),
+                  ang=n*TWO_PI*2;
+            tx+=Math.sin(flowTime*0.35+p.seedX*2)*(SWAY_STRENGTH*motion);
+            ty+=Math.cos(flowTime*0.30+p.seedY*2)*(SWAY_STRENGTH*0.65*motion);
+            tx+=Math.cos(ang)*LIQUID_STRENGTH*motion;
+            ty+=Math.sin(ang)*LIQUID_STRENGTH*0.75*motion;
+
+            if (mergeK>0.0001) {
+              const aa=p.seedA+flowTime*0.25,
+                    breathe=1.0+BREATHE_AMP*Math.sin(flowTime*0.4+p.seedX),
+                    rr=blobR*breathe;
+              const ringX=cx+Math.cos(aa)*rr,
+                    ringY=cy+Math.sin(aa)*rr*0.95;
+              const swirl=22*mergeK,
+                    sA=aa+flowTime*0.4;
+              tx=lerp(tx,cx,mergeK*0.85);
+              ty=lerp(ty,cy,mergeK*0.85);
+              tx=lerp(tx,ringX+Math.cos(sA)*swirl,0.65*mergeK);
+              ty=lerp(ty,ringY+Math.sin(sA)*swirl*0.75,0.65*mergeK);
+            }
+
+            const endSealMax=Math.max(sealStart,sealEnd);
+            const springNow=lerp(0.20,SPRING,smear)*lerp(1.0,1.55,endSealMax);
+            const dampNow  =lerp(0.66,DAMPING,smear)*lerp(1.0,0.90,endSealMax);
+
+            p.vx+=(tx-p.x)*springNow;
+            p.vy+=(ty-p.y)*springNow;
+            p.vx*=dampNow;
+            p.vy*=dampNow;
+            p.x+=p.vx;
+            p.y+=p.vy;
+          }
+        },
+
+        renderPaint(smear, sealStart, sealEnd, fillStart, fillEnd, colorMix) {
+          const pa=this.paintA, pb=this.paintB;
+          pa.clear();
+          pa.background(0);
+          const seal=Math.max(sealStart,sealEnd),
+                fill=Math.max(fillStart,fillEnd);
+          let blurNow=lerp(1.2,BLUR_PX,smear),
+              thrNow=lerp(95.0,THRESHOLD,smear),
+              radScale=lerp(0.75,1.0,smear);
+          const startCrisp=clamp((sealStart-0.30)/0.70,0,1);
+          radScale=lerp(radScale,1.25,startCrisp);
+          blurNow=lerp(blurNow,0.05,startCrisp);
+          thrNow=lerp(thrNow,235.0,startCrisp);
+          const w=(sealEnd>sealStart)?1.0:0.0;
+          const radSeal=lerp(0.90,1.02,w),
+                blurSeal=lerp(1.0,2.2,w),
+                thrSeal=lerp(115.0,88.0,w);
+          const radFill=lerp(0.95,1.12,w),
+                blurFill=lerp(1.0,2.6,w),
+                thrFill=lerp(108.0,82.0,w);
+          const cbSeal=lerp(1.0,2.7,w),
+                cbFill=lerp(0.03,1.0,w),
+                ctSeal=lerp(190.0,150.0,w),
+                ctFill=lerp(178.0,132.0,w);
+          radScale=lerp(lerp(radScale,radSeal,seal),radFill,fill);
+          blurNow =lerp(lerp(blurNow, blurSeal,seal),blurFill,fill);
+          thrNow  =lerp(lerp(thrNow,  thrSeal, seal),thrFill,fill);
+
+          pa.noStroke();
+          const col = SYSTEM_COLORS[this.cfg.colorIdx];
+          pa.fill(
+            Math.round(lerp(255,col[0],colorMix)),
+            Math.round(lerp(255,col[1],colorMix)),
+            Math.round(lerp(255,col[2],colorMix))
+          );
+          const sx=pa.width/width, sy=pa.height/height;
+          for (const p of this.particles) {
+            const r=p.r*radScale*((sx+sy)*0.5);
+            pa.circle(p.x*sx,p.y*sy,r*2.0);
+          }
+          pa.push();
+          const ctx=pa.drawingContext, prev=ctx.filter;
+          ctx.filter=`blur(${blurNow}px)`;
+          pa.image(pa,0,0);
+          ctx.filter=prev;
+          pa.pop();
+          colorThresholdInto(pa,pb,thrNow);
+          if (seal>0.001) {
+            pa.clear();
+            pa.background(0);
+            pa.image(pb,0,0);
+            pa.push();
+            const c2=pa.drawingContext, p2=c2.filter;
+            c2.filter=`blur(${lerp(0,cbSeal,seal)+lerp(0,cbFill,fill)}px)`;
+            pa.image(pa,0,0);
+            c2.filter=p2;
+            pa.pop();
+            colorThresholdInto(pa,pb,lerp(lerp(210.0,ctSeal,seal),ctFill,fill));
+            if (fill>0.70) {
+              const k=clamp((fill-0.70)/0.30,0,1);
+              pa.clear();
+              pa.background(0);
+              pa.image(pb,0,0);
+              pa.push();
+              const c3=pa.drawingContext, p3=c3.filter;
+              c3.filter=`blur(${lerp(0,lerp(0.9,1.2,w),k)}px)`;
+              pa.image(pa,0,0);
+              c3.filter=p3;
+              pa.pop();
+              colorThresholdInto(pa,pb,lerp(210.0,lerp(182.0,170.0,w),k));
+            }
+          }
+        },
+      };
+      s.makePaintBuffers();
+      s.buildPointSets();
+      return s;
+    }
+
+    // ── Combined blob render ──────────────────────────────────────────────────
+    function renderCombinedPaint(smear, mergeK, inkJoinK, easeT) {
+      // Once past the kill point, never render the combined blob again
+      if (easeT > COMBO_KILL_EASE) return;
+
+      comboA.clear();
+      comboA.background(0);
+
+      let blurNow  = lerp(3.2, 11.0, smear);
+      let thrNow   = lerp(92.0, 30.0, smear);
+      let radScale = lerp(0.80, 1.06, smear);
+
+      const breathe = 1.0 + BREATHE_AMP*mergeK*Math.sin(flowTime*0.25);
+
+      comboA.noStroke();
+      const sx=comboA.width/width, sy=comboA.height/height;
+
+      const sumW = inkJoinK[0] + inkJoinK[1] + inkJoinK[2] + inkJoinK[3];
+      const inkDone = clamp(sumW / 4, 0, 1);
+      const stabilizeInk = smoothstep(0.65, 0.98, inkDone);
+      const wobbleMul = 1.0 - stabilizeInk;
+
+      // keep original “disperse” shaping for the middle of the morph
+      const disperse = smoothstep(0.93, 0.97, easeT);
+      let blobAlpha  = 255 * (1.0 - disperse);
+
+      thrNow  += (6.0*mergeK*Math.sin(flowTime*0.18) + mergeK*10.0) * wobbleMul;
+      blurNow *= lerp(1.0, breathe, wobbleMul);
+
+      if (blobAlpha > 1) {
+        // Text systems in combined blob
+        for (let si=0; si<systems.length; si++) {
+          const col = SYSTEM_COLORS[systems[si].cfg.colorIdx];
+          const comboColorMixSystem = smoothstep(0.52 + si*0.05, 0.76 + si*0.05, easeT);
+          comboA.fill(
+            Math.round(lerp(255, col[0], comboColorMixSystem)),
+            Math.round(lerp(255, col[1], comboColorMixSystem)),
+            Math.round(lerp(255, col[2], comboColorMixSystem)),
+            blobAlpha
+          );
+          for (const p of systems[si].particles) {
+            const r=p.r*radScale*((sx+sy)*0.5);
+            comboA.circle(p.x*sx,p.y*sy,r*2.0);
+          }
+        }
+
+        // Ink drops in combined blob
+        for (let di=0; di<inkDrops.length; di++) {
+          const jk = inkJoinK[di];
+          if (jk < 0.001) continue;
+
+          const col = SYSTEM_COLORS[inkDrops[di].colorIdx];
+          const comboColorMixInk = smoothstep(0.00, 0.06, jk);
+
+          comboA.fill(
+            Math.round(lerp(255, col[0], comboColorMixInk)),
+            Math.round(lerp(255, col[1], comboColorMixInk)),
+            Math.round(lerp(255, col[2], comboColorMixInk)),
+            blobAlpha
+          );
+
+          for (const p of inkDrops[di].particles) {
+            const r = p.r * radScale * INK_DRAW_RADIUS_MULT * ((sx+sy)*0.5);
+            comboA.circle(p.x*sx, p.y*sy, r*2.0);
+          }
+        }
+      }
+
+      const voidK = smoothstep(0.35,0.95,mergeK)*VOID_STRENGTH;
+      if (voidK>0.0001) {
+        comboA.fill(0);
+        const cxp=width*0.5*sx, cyp=height*0.5*sy, tt=flowTime*VOID_SPEED;
+        for (let i=0;i<VOID_COUNT;i++) {
+          const a=tt*0.9+i*0.9, wob=noise(i*10.1,tt*0.08);
+          const ox=Math.cos(a)*(VOID_ORBIT+wob*28)*voidK,
+                oy=Math.sin(a)*(VOID_ORBIT*0.85+wob*22)*voidK;
+          comboA.circle(
+            cxp+ox,
+            cyp+oy,
+            lerp(VOID_SIZE_MIN,VOID_SIZE_MAX,noise(i*3.3,tt*0.12))*voidK*2.0
+          );
+        }
+        const bCount=Math.floor(lerp(0,18,voidK));
+        for (let i=0;i<bCount;i++) {
+          const a=tt*1.6+i*1.7,
+                rr=(12+48*noise(i*5.7,tt*0.18))*voidK;
+          comboA.circle(
+            cxp+Math.cos(a)*rr,
+            cyp+Math.sin(a*0.9)*rr*0.78,
+            (2.5+7.0*noise(i*9.9,tt*0.22))*voidK*2.0
+          );
+        }
+      }
+
+      comboA.push();
+      const ctx=comboA.drawingContext, prev=ctx.filter;
+      ctx.filter=`blur(${blurNow}px)`;
+      comboA.image(comboA,0,0);
+      ctx.filter=prev;
+      comboA.pop();
+
+      colorThresholdInto(comboA, comboB, thrNow);
+    }
+
+    // ── Main loop ─────────────────────────────────────────────────────────────
+    function draw() {
+      background(10);
+      const t     = scrollProgress();
+      const easeT = smoothstep(0.05, 0.95, t);
+      const mid   = bell01(easeT);
+      let smear   = smoothstep(0.05, 0.95, mid);
+
+      const sealEnd  = smoothstep(0.92, 1.00, easeT);
+      const fillEnd  = smoothstep(0.96, 1.00, easeT);
+
+      smear = Math.max(smear, smoothstep(0.72,0.88,easeT)*0.55) * (1.0-sealEnd*0.95);
+
+      const sealStart = 1.0 - smoothstep(0.00, 0.14, easeT);
+      const fillStart = 1.0 - smoothstep(0.00, 0.10, easeT);
+
+      const inkPhaseActive = easeT >= INK_JOIN_START[0] - 0.02;
+      if (inkPhaseActive) smear = Math.max(smear, 0.38);
+
+      const dScroll  = Math.abs(t - lastScroll);
+      const scrolling = dScroll > 0.0002;
+      if (scrolling) flowTime += dScroll * 18.0;
+
+      let steps = 0;
+      if (scrolling) steps = Math.min(10, Math.ceil(dScroll*220));
+      else steps = (smear < 0.22 || Math.max(sealStart,sealEnd) > 0.01 || inkPhaseActive) ? 2 : 0;
+
+      const morphHasStarted = easeT > 0.18;
+      const mergeIn   = smoothstep(0.22, 0.44, easeT);
+      const mergeOut  = 1.0 - smoothstep(0.70, 0.93, easeT);
+      const mergeKraw = clamp(mergeIn * mergeOut, 0, 1);
+      const mergeKNatural = pow(mergeKraw, 0.65) * (1.0 - sealEnd);
+
+      const inkHold = smoothstep(INK_JOIN_START[0]-0.03, INK_JOIN_START[0]+0.03, easeT)
+                    * (1.0 - smoothstep(INK_LEAVE_START[0], INK_LEAVE_END[0], easeT));
+
+      const mergeK = Math.max(mergeKNatural, inkHold*0.80*(1.0-sealEnd));
+
+      const perSystemMergeK = [];
+      for (let i=0;i<4;i++) {
+        const d = STAGGER_DELAY[i];
+        const raw = clamp(
+          smoothstep(0.22+d,0.44+d,easeT) *
+          (1.0-smoothstep(0.70,0.93,easeT)),
+          0,1
+        );
+        perSystemMergeK.push(
+          Math.max(pow(raw,0.65)*(1.0-sealEnd), mergeK*0.95)
+        );
+      }
+
+      const inkJoinK = [];
+      for (let i=0;i<4;i++) {
+        const jIn  = smoothstep(INK_JOIN_START[i],  INK_JOIN_END[i],  easeT);
+        const jOut = 1.0 - smoothstep(INK_LEAVE_START[i], INK_LEAVE_END[i], easeT);
+        inkJoinK.push(clamp(jIn*jOut, 0, 1));
+      }
+
+      const endColorRamp = smoothstep(0.90, 0.96, easeT);
+
+      for (let i=0;i<steps;i++) {
+        for (let si=0;si<systems.length;si++) {
+          systems[si].stepSimulation(
+            easeT, smear, sealStart, sealEnd, fillStart, fillEnd,
+            morphHasStarted ? perSystemMergeK[si] : 0
+          );
+        }
+        for (let di=0;di<inkDrops.length;di++) {
+          stepInkDrop(inkDrops[di], inkJoinK[di], mergeK, smear, dScroll);
+        }
+      }
+      lastScroll = t;
+
+      drawingContext.imageSmoothingEnabled = false;
+
+      const blendIn    = smoothstep(0.08, 0.30, mergeK);
+      const blendOut   = 1.0 - smoothstep(0.18, 0.45, mergeK);
+      const alphaCombo = (easeT > COMBO_KILL_EASE) ? 0.0 : clamp(blendIn, 0, 1);
+      const alphaIndiv = clamp(blendOut, 0, 1);
+
+      if (alphaIndiv > 0.001) {
+        for (let si=0; si<systems.length; si++) {
+          const s = systems[si];
+
+          const baseColor = smoothstep(
+            INK_JOIN_START[si] - 0.04,
+            INK_JOIN_END[si]   + 0.02,
+            easeT
+          );
+          const finalBoost = endColorRamp;
+          const colorMixSystem = clamp(Math.max(baseColor, finalBoost), 0, 1);
+
+          s.renderPaint(smear, sealStart, sealEnd, fillStart, fillEnd, colorMixSystem);
+          tint(255, 255*alphaIndiv);
+          image(s.paintB,0,0,width,height);
+          noTint();
+          const glow=smear*(1-sealEnd)*(1-sealStart)*alphaIndiv;
+          if (glow>0.001) {
+            blendMode(ADD);
+            tint(255,55*glow);
+            image(s.paintB,0,0,width,height);
+            noTint();
+            blendMode(BLEND);
+          }
+        }
+      }
+
+      if (morphHasStarted && alphaCombo>0.001) {
+        renderCombinedPaint(smear, mergeK, inkJoinK, easeT);
+        tint(255, 255*alphaCombo);
+        image(comboB,0,0,width,height);
+        noTint();
+        const glow2=smear*(1-sealEnd)*(1-sealStart)*alphaCombo*0.95;
+        if (glow2>0.001) {
+          blendMode(ADD);
+          tint(255,55*glow2);
+          image(comboB,0,0,width,height);
+          noTint();
+          blendMode(BLEND);
+        }
+      }
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+    function colorThresholdInto(srcGfx, dstGfx, thr) {
+      srcGfx.loadPixels();
+      dstGfx.loadPixels();
+      const sp=srcGfx.pixels, dp=dstGfx.pixels;
+      for (let i=0;i<sp.length;i+=4) {
+        const br=Math.max(sp[i],sp[i+1],sp[i+2]);
+        if (br>thr) {
+          const sc=255/Math.max(1,br);
+          dp[i]  =Math.min(255,Math.round(sp[i]  *sc));
+          dp[i+1]=Math.min(255,Math.round(sp[i+1]*sc));
+          dp[i+2]=Math.min(255,Math.round(sp[i+2]*sc));
+          dp[i+3]=255;
+        } else {
+          dp[i]=dp[i+1]=dp[i+2]=dp[i+3]=0;
+        }
+      }
+      dstGfx.updatePixels();
+    }
+
+    function textPointsAt(str, size, posFn, sampleFactor) {
+      const b=font.textBounds(str,0,0,size), pos=posFn(b,size);
+      return font.textToPoints(str,pos.x,pos.y,size,{
+        sampleFactor,
+        simplifyThreshold:0
+      }).filter(p=>p.x>0&&p.x<width&&p.y>0&&p.y<height);
+    }
+
+    function buildFillPointsAt(str, size, posFn, stepPx) {
+      const w=Math.floor(width*SIM_SCALE), h=Math.floor(height*SIM_SCALE);
+      const g=createGraphics(w,h);
+      g.pixelDensity(1);
+      g.noSmooth();
+      g.background(0);
+      g.fill(255);
+      g.noStroke();
+      g.textFont(font);
+      g.textSize(size*(w/width));
+      g.textAlign(LEFT,BASELINE);
+      const b=font.textBounds(str,0,0,size), pos=posFn(b,size);
+      const sx=w/width, sy=h/height;
+      g.text(str,pos.x*sx,pos.y*sy);
+      g.loadPixels();
+      const pts=[], step=Math.max(2,Math.floor(stepPx*(w/width)));
+      const bbX0=Math.max(0,Math.floor((pos.x+b.x)*sx)-2),
+            bbY0=Math.max(0,Math.floor((pos.y+b.y)*sy)-2);
+      const bbX1=Math.min(w-1,Math.ceil((pos.x+b.x+b.w)*sx)+2),
+            bbY1=Math.min(h-1,Math.ceil((pos.y+b.y+b.h)*sy)+2);
+      for (let y=bbY0;y<=bbY1;y+=step)
+        for (let x=bbX0;x<=bbX1;x+=step) {
+          if (g.pixels[4*(y*w+x)]>10)
+            pts.push({x:x/sx,y:y/sy});
+        }
+      g.remove();
+      return pts;
+    }
+
+    function scrollProgress() {
+      const doc=document.documentElement, st=window.scrollY||doc.scrollTop||0;
+      return clamp(st/((doc.scrollHeight-window.innerHeight)||1),0,1);
+    }
+    function smoothstep(a,b,x) {
+      x=clamp((x-a)/(b-a),0,1);
+      return x*x*(3-2*x);
+    }
+    function bell01(x) {
+      return 1-Math.abs(0.5-x)*2;
+    }
+    function clamp(v,a,b) {
+      return Math.max(a,Math.min(b,v));
+    }
+  </script>
+</body>
+</html>
