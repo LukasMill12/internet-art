@@ -71,6 +71,10 @@
     let flowTime   = 0;
     let comboA, comboB;
 
+    // NEW: cache state to avoid expensive re-render when nothing changes
+    let prevEaseT = -1;
+    let prevSmear = -1;
+
     function preload() { font = loadFont('OpenSans-Bold.ttf'); }
 
     function setup() {
@@ -87,6 +91,9 @@
       buildComboBuffers();
       buildSystems(true);
       buildInkDrops();
+      // Force rerender after resize
+      prevEaseT = -1;
+      prevSmear = -1;
     }
 
     function buildComboBuffers() {
@@ -627,6 +634,13 @@
       const alphaCombo = (easeT > COMBO_KILL_EASE) ? 0.0 : clamp(blendIn, 0, 1);
       const alphaIndiv = clamp(blendOut, 0, 1);
 
+      // NEW: Only rerun expensive paint (blur + threshold) when state changes
+      const dirtyRender =
+        frameCount === 1 ||
+        steps > 0 ||                // sim changed positions
+        Math.abs(easeT - prevEaseT) > 1e-6 ||
+        Math.abs(smear - prevSmear) > 1e-6;
+
       if (alphaIndiv > 0.001) {
         for (let si=0; si<systems.length; si++) {
           const s = systems[si];
@@ -639,10 +653,15 @@
           const finalBoost = endColorRamp;
           const colorMixSystem = clamp(Math.max(baseColor, finalBoost), 0, 1);
 
-          s.renderPaint(smear, sealStart, sealEnd, fillStart, fillEnd, colorMixSystem);
+          // Only recompute the expensive paint buffers if needed
+          if (dirtyRender) {
+            s.renderPaint(smear, sealStart, sealEnd, fillStart, fillEnd, colorMixSystem);
+          }
+
           tint(255, 255*alphaIndiv);
           image(s.paintB,0,0,width,height);
           noTint();
+
           const glow=smear*(1-sealEnd)*(1-sealStart)*alphaIndiv;
           if (glow>0.001) {
             blendMode(ADD);
@@ -655,10 +674,15 @@
       }
 
       if (morphHasStarted && alphaCombo>0.001) {
-        renderCombinedPaint(smear, mergeK, inkJoinK, easeT);
+        // Only recompute combo buffer if needed
+        if (dirtyRender) {
+          renderCombinedPaint(smear, mergeK, inkJoinK, easeT);
+        }
+
         tint(255, 255*alphaCombo);
         image(comboB,0,0,width,height);
         noTint();
+
         const glow2=smear*(1-sealEnd)*(1-sealStart)*alphaCombo*0.95;
         if (glow2>0.001) {
           blendMode(ADD);
@@ -668,6 +692,10 @@
           blendMode(BLEND);
         }
       }
+
+      // update cache state
+      prevEaseT = easeT;
+      prevSmear = smear;
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
